@@ -75,7 +75,7 @@ async function startBot() {
     if (type !== "notify") return;
     for (const msg of msgs) {
       try {
-        if (msg.key.fromMe) continue;
+        if (msg.key.fromMe == true) continue;
         if (msg.key.remoteJid === "status@broadcast") continue;
         const jid = msg.key.remoteJid;
         if (jid === "923272616116@s.whatsapp.net") continue;
