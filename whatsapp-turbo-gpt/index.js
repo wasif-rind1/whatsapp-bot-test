@@ -1,25 +1,21 @@
-"use strict";
-require("dotenv").config();
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require("@whiskeysockets/baileys");
-const Groq = require("groq-sdk");
-const pino = require("pino");
-const chalk = require("chalk");
-const qrcode = require("qrcode-terminal");
-const NodeCache = require("node-cache");
-const fs = require("fs");
+import dotenv from "dotenv";
+dotenv.config();
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from "@whiskeysockets/baileys";
+import Groq from "groq-sdk";
+import pino from "pino";
+import qrcode from "qrcode-terminal";
+import NodeCache from "node-cache";
+import fs from "fs";
 
 const CONFIG = {
   groqKey: process.env.GROQ_API_KEY || "",
   model: "llama-3.1-8b-instant",
-  systemPrompt: "You are a helpful WhatsApp assistant made by Wasif Rind. When someone asks who made you or who you are, tell them you were created by Wasif Rind. Be concise and friendly.",
+  systemPrompt: "You are a helpful WhatsApp assistant made by Wasif Rind. When someone asks who made you, tell them you were created by Wasif Rind. Be concise and friendly.",
   maxHistory: 10,
   authFolder: "./auth_info_baileys",
 };
 
-if (!CONFIG.groqKey) {
-  console.error("\n[ERROR] GROQ_API_KEY is not set in .env file!\n");
-  process.exit(1);
-}
+if (!CONFIG.groqKey) { console.error("GROQ_API_KEY not set!"); process.exit(1); }
 
 const groq = new Groq({ apiKey: CONFIG.groqKey });
 const conversations = new Map();
@@ -54,7 +50,7 @@ async function startBot() {
   const sock = makeWASocket({ version, logger: pino({ level: "silent" }), printQRInTerminal: true, auth: state, msgRetryCounterCache: new NodeCache() });
   sock.ev.on("creds.update", saveCreds);
   sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect, qr } = update;
+    const { connection, lastDisconnect } = update;
     if (connection === "close") {
       const code = lastDisconnect?.error?.output?.statusCode;
       if (code !== DisconnectReason.loggedOut) { setTimeout(() => startBot(), 3000); }
