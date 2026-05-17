@@ -76,6 +76,7 @@ async function startBot() {
     for (const msg of msgs) {
       try {
         if (msg.key.fromMe) continue;
+        if (jid === "923272616116@s.whatsapp.net") continue;
         if (msg.key.remoteJid === "status@broadcast") continue;
         const jid = msg.key.remoteJid;
         const text = extractMessageText(msg);
