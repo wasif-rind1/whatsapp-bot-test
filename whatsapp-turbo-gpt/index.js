@@ -6,6 +6,7 @@ import pino from "pino";
 import qrcode from "qrcode-terminal";
 import NodeCache from "node-cache";
 import fs from "fs";
+import http from "http";
 
 const CONFIG = {
   groqKey: process.env.GROQ_API_KEY || "",
@@ -19,6 +20,18 @@ if (!CONFIG.groqKey) { console.error("GROQ_API_KEY not set!"); process.exit(1); 
 
 const groq = new Groq({ apiKey: CONFIG.groqKey });
 const conversations = new Map();
+let lastQR = "";
+
+http.createServer((req, res) => {
+  res.writeHead(200, {"Content-Type": "text/html"});
+  if (lastQR) {
+    res.end(`<html><body style="text-align:center;font-family:sans-serif"><h2>WhatsApp Bot QR Code</h2><p>Scan with WhatsApp to connect</p><img src="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(lastQR)}"/><p style="color:gray">Made by Wasif Rind</p></body></html>`);
+  } else {
+    res.end("<html><body style='text-align:center;font-family:sans-serif'><h2>Bot is already connected!</h2><p>No QR needed</p></body></html>");
+  }
+}).listen(process.env.PORT || 3000, () => {
+  console.log("Web server started on port " + (process.env.PORT || 3000));
+});
 
 function getHistory(jid) {
   if (!conversations.has(jid)) conversations.set(jid, []);
@@ -47,15 +60,16 @@ async function startBot() {
   if (!fs.existsSync(CONFIG.authFolder)) fs.mkdirSync(CONFIG.authFolder, { recursive: true });
   const { state, saveCreds } = await useMultiFileAuthState(CONFIG.authFolder);
   const { version } = await fetchLatestBaileysVersion();
-  const sock = makeWASocket({ version, logger: pino({ level: "silent" }), printQRInTerminal: true, auth: state, msgRetryCounterCache: new NodeCache() });
+  const sock = makeWASocket({ version, logger: pino({ level: "silent" }), printQRInTerminal: false, auth: state, msgRetryCounterCache: new NodeCache() });
   sock.ev.on("creds.update", saveCreds);
   sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect } = update;
+    const { connection, lastDisconnect, qr } = update;
+    if (qr) { lastQR = qr; console.log("QR code updated - open web URL to scan"); }
     if (connection === "close") {
       const code = lastDisconnect?.error?.output?.statusCode;
       if (code !== DisconnectReason.loggedOut) { setTimeout(() => startBot(), 3000); }
     }
-    if (connection === "open") { console.log("Connected to WhatsApp! Bot is ready!"); }
+    if (connection === "open") { lastQR = ""; console.log("Connected to WhatsApp! Bot is ready!"); }
   });
   sock.ev.on("messages.upsert", async ({ messages: msgs, type }) => {
     if (type !== "notify") return;
