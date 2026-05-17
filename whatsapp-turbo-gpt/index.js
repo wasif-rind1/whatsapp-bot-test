@@ -1,74 +1,27 @@
-/**
- * WhatsApp Turbo GPT Bot  –  v2.0.0
- * Original: harshitethic/whatsapp-turbo-gpt
- * Updated & fixed: modern Baileys + OpenAI v4 SDK
- *
- * FIXES:
- *  - Upgraded from openai v3 (Configuration/OpenAIApi) → v4 (new OpenAI class)
- *  - Upgraded from @adiwajshing/baileys → @whiskeysockets/baileys (official fork)
- *  - Fixed connection event handling (now uses 'connection.update' properly)
- *  - Fixed credential saving (now uses 'creds.update')
- *  - Replaced hardcoded API key with .env (dotenv)
- *  - Fixed message extraction (supports text, extendedText, conversation)
- *  - Fixed chat history: per-user in-memory Map instead of a shared JSON file
- *  - Added graceful error handling so the bot doesn't crash on API errors
- *  - Removed broken/outdated packages (crypto, fs, util, inshorts-news-api)
- *  - Fixed QR code display (newer Baileys uses 'connection.update' event)
- *  - Added reconnect logic on disconnect
- */
-
-'use strict';
-
-require('dotenv').config();
-
-const {
-  default: makeWASocket,
-  useMultiFileAuthState,
-  DisconnectReason,
-  fetchLatestBaileysVersion,
-  makeInMemoryStore,
-  jidDecode,
-  proto,
-  getContentType,
-} = require('@whiskeysockets/baileys');
-
-const OpenAI = require('openai');
-const pino   = require('pino');
-const chalk  = require('chalk');
-const figlet = require('figlet');
-const qrcode = require('qrcode-terminal');
-const NodeCache = require('node-cache');
-const path   = require('path');
-const fs     = require('fs');
-
-// ─── Config ────────────────────────────────────────────────────────────────
+"use strict";
+require("dotenv").config();
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require("@whiskeysockets/baileys");
+const Groq = require("groq-sdk");
+const pino = require("pino");
+const chalk = require("chalk");
+const qrcode = require("qrcode-terminal");
+const NodeCache = require("node-cache");
+const fs = require("fs");
 
 const CONFIG = {
-  openaiKey   : process.env.OPENAI_API_KEY   || '',
-  model       : process.env.OPENAI_MODEL     || 'gpt-4o',
-  maxTokens   : parseInt(process.env.MAX_TOKENS  || '1000', 10),
-  systemPrompt: process.env.SYSTEM_PROMPT    || 'You are a helpful WhatsApp assistant. Be concise and friendly.',
-  maxHistory  : parseInt(process.env.MAX_HISTORY || '10', 10),
-  botName     : process.env.BOT_NAME         || 'WhatsApp GPT Bot',
-  authFolder  : './auth_info_baileys',
+  groqKey: process.env.GROQ_API_KEY || "",
+  model: "llama-3.1-8b-instant",
+  systemPrompt: "You are a helpful WhatsApp assistant made by Wasif Rind. When someone asks who made you or who you are, tell them you were created by Wasif Rind. Be concise and friendly.",
+  maxHistory: 10,
+  authFolder: "./auth_info_baileys",
 };
 
-// ─── Validate env ──────────────────────────────────────────────────────────
-
-if (!CONFIG.openaiKey || CONFIG.openaiKey.startsWith('sk-xxx')) {
-  console.error(chalk.red('\n[ERROR] OPENAI_API_KEY is not set in your .env file!\n'));
-  console.error(chalk.yellow('  1. Copy .env.example to .env'));
-  console.error(chalk.yellow('  2. Add your key from https://platform.openai.com/api-keys\n'));
+if (!CONFIG.groqKey) {
+  console.error("\n[ERROR] GROQ_API_KEY is not set in .env file!\n");
   process.exit(1);
 }
 
-// ─── OpenAI client ─────────────────────────────────────────────────────────
-
-const openai = new OpenAI({ apiKey: CONFIG.openaiKey });
-
-// ─── Conversation history per JID ──────────────────────────────────────────
-//     Map<jid, Array<{role, content}>>
-
+const groq = new Groq({ apiKey: CONFIG.groqKey });
 const conversations = new Map();
 
 function getHistory(jid) {
@@ -76,172 +29,59 @@ function getHistory(jid) {
   return conversations.get(jid);
 }
 
-function addToHistory(jid, role, content) {
-  const hist = getHistory(jid);
-  hist.push({ role, content });
-  // Keep only the last N exchanges to avoid token overflow
-  if (hist.length > CONFIG.maxHistory * 2) {
-    hist.splice(0, 2); // remove oldest user+assistant pair
-  }
-}
-
-// ─── OpenAI chat completion ─────────────────────────────────────────────────
-
 async function getAIReply(jid, userMessage) {
-  addToHistory(jid, 'user', userMessage);
-
-  const messages = [
-    { role: 'system', content: CONFIG.systemPrompt },
-    ...getHistory(jid),
-  ];
-
-  const response = await openai.chat.completions.create({
-    model     : CONFIG.model,
-    messages,
-    max_tokens: CONFIG.maxTokens,
-  });
-
-  const reply = response.choices[0]?.message?.content?.trim() || '(no response)';
-  addToHistory(jid, 'assistant', reply);
+  const history = getHistory(jid);
+  history.push({ role: "user", content: userMessage });
+  if (history.length > CONFIG.maxHistory * 2) history.splice(0, 2);
+  const messages = [{ role: "system", content: CONFIG.systemPrompt }, ...history];
+  const response = await groq.chat.completions.create({ model: CONFIG.model, messages, max_tokens: 1000 });
+  const reply = response.choices[0]?.message?.content?.trim() || "Sorry, no response.";
+  history.push({ role: "assistant", content: reply });
   return reply;
 }
-
-// ─── Extract text from any WhatsApp message type ───────────────────────────
 
 function extractMessageText(msg) {
   const content = msg?.message;
   if (!content) return null;
-
-  return (
-    content.conversation                                     ||
-    content.extendedTextMessage?.text                        ||
-    content.imageMessage?.caption                            ||
-    content.videoMessage?.caption                            ||
-    content.buttonsResponseMessage?.selectedButtonId         ||
-    content.listResponseMessage?.singleSelectReply?.selectedRowId ||
-    null
-  );
+  return content.conversation || content.extendedTextMessage?.text || content.imageMessage?.caption || null;
 }
-
-// ─── Banner ────────────────────────────────────────────────────────────────
-
-function printBanner() {
-  console.clear();
-  console.log(
-    chalk.cyan(
-      figlet.textSync('WA-GPT Bot', { horizontalLayout: 'fitted' })
-    )
-  );
-  console.log(chalk.green(`  ${CONFIG.botName} – powered by ${CONFIG.model}`));
-  console.log(chalk.gray('  ─────────────────────────────────────────\n'));
-}
-
-// ─── Main bot function ─────────────────────────────────────────────────────
 
 async function startBot() {
-  printBanner();
-
-  // Ensure auth folder exists
-  if (!fs.existsSync(CONFIG.authFolder)) {
-    fs.mkdirSync(CONFIG.authFolder, { recursive: true });
-  }
-
+  console.log("WhatsApp Groq Bot Starting...");
+  if (!fs.existsSync(CONFIG.authFolder)) fs.mkdirSync(CONFIG.authFolder, { recursive: true });
   const { state, saveCreds } = await useMultiFileAuthState(CONFIG.authFolder);
-  const { version, isLatest } = await fetchLatestBaileysVersion();
-
-  console.log(chalk.blue(`  Using Baileys v${version.join('.')} (isLatest: ${isLatest})\n`));
-
-  const sock = makeWASocket({
-    version,
-    logger          : pino({ level: 'silent' }), // change to 'debug' for verbose logs
-    printQRInTerminal: false,                     // we print manually for nicer formatting
-    auth            : state,
-    msgRetryCounterCache: new NodeCache(),
-    generateHighQualityLinkPreview: true,
-  });
-
-  // ── Save credentials on update ────────────────────────────────────────────
-  sock.ev.on('creds.update', saveCreds);
-
-  // ── Connection events ─────────────────────────────────────────────────────
-  sock.ev.on('connection.update', async (update) => {
+  const { version } = await fetchLatestBaileysVersion();
+  const sock = makeWASocket({ version, logger: pino({ level: "silent" }), printQRInTerminal: true, auth: state, msgRetryCounterCache: new NodeCache() });
+  sock.ev.on("creds.update", saveCreds);
+  sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
-      console.log(chalk.yellow('\n  Scan this QR code with WhatsApp:\n'));
-      qrcode.generate(qr, { small: true });
-      console.log(chalk.gray('\n  (WhatsApp → Linked Devices → Link a Device)\n'));
+    if (connection === "close") {
+      const code = lastDisconnect?.error?.output?.statusCode;
+      if (code !== DisconnectReason.loggedOut) { setTimeout(() => startBot(), 3000); }
     }
-
-    if (connection === 'close') {
-      const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-
-      console.log(
-        chalk.red(`\n  Connection closed. Reason: ${statusCode}`),
-        shouldReconnect
-          ? chalk.yellow('→ Reconnecting...')
-          : chalk.red('→ Logged out. Delete auth_info_baileys/ and restart.')
-      );
-
-      if (shouldReconnect) {
-        setTimeout(() => startBot(), 3000);
-      }
-    }
-
-    if (connection === 'open') {
-      console.log(chalk.green('\n  ✅ Connected to WhatsApp!\n'));
-      console.log(chalk.cyan('  Bot is ready. Send a message to start chatting.\n'));
-    }
+    if (connection === "open") { console.log("Connected to WhatsApp! Bot is ready!"); }
   });
-
-  // ── Incoming messages ─────────────────────────────────────────────────────
-  sock.ev.on('messages.upsert', async ({ messages: msgs, type }) => {
-    if (type !== 'notify') return;
-
+  sock.ev.on("messages.upsert", async ({ messages: msgs, type }) => {
+    if (type !== "notify") return;
     for (const msg of msgs) {
       try {
-        // Ignore own messages, status broadcasts, and empty messages
-        if (msg.key.fromMe)                         continue;
-        if (msg.key.remoteJid === 'status@broadcast') continue;
-
-        const jid  = msg.key.remoteJid;
+        if (msg.key.fromMe) continue;
+        if (msg.key.remoteJid === "status@broadcast") continue;
+        const jid = msg.key.remoteJid;
         const text = extractMessageText(msg);
-
-        if (!text || text.trim() === '') continue;
-
-        const sender = msg.pushName || jid.split('@')[0];
-        console.log(chalk.gray(`  [${new Date().toLocaleTimeString()}] `), chalk.white(`${sender}: `), chalk.cyan(text));
-
-        // Show "typing…" indicator
-        await sock.sendPresenceUpdate('composing', jid);
-
-        // Get reply from OpenAI
+        if (!text || text.trim() === "") continue;
+        const sender = msg.pushName || jid.split("@")[0];
+        console.log(`[${new Date().toLocaleTimeString()}] ${sender}: ${text}`);
+        await sock.sendPresenceUpdate("composing", jid);
         const reply = await getAIReply(jid, text);
-
-        // Stop "typing" and send reply
-        await sock.sendPresenceUpdate('paused', jid);
+        await sock.sendPresenceUpdate("paused", jid);
         await sock.sendMessage(jid, { text: reply }, { quoted: msg });
-
-        console.log(chalk.gray('  [BOT] '), chalk.green(reply.slice(0, 80) + (reply.length > 80 ? '...' : '')));
-
       } catch (err) {
-        console.error(chalk.red('  [ERROR] Failed to process message:'), err.message);
-
-        // Tell the user something went wrong (don't crash)
-        try {
-          await sock.sendMessage(msg.key.remoteJid, {
-            text: '⚠️ Sorry, something went wrong. Please try again in a moment.',
-          });
-        } catch (_) { /* ignore send failure */ }
+        console.error("[ERROR]", err.message);
+        try { await sock.sendMessage(msg.key.remoteJid, { text: "Sorry, something went wrong." }); } catch (_) {}
       }
     }
   });
 }
 
-// ─── Entry point ───────────────────────────────────────────────────────────
-
-startBot().catch((err) => {
-  console.error(chalk.red('\n[FATAL]'), err);
-  process.exit(1);
-});
+startBot().catch((err) => { console.error("[FATAL]", err); process.exit(1); });
