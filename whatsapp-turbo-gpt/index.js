@@ -11,7 +11,7 @@ import http from "http";
 const CONFIG = {
   groqKey: process.env.GROQ_API_KEY || "",
   model: "llama-3.1-8b-instant",
-  systemPrompt: "You are a helpful WhatsApp assistant made by Wasif Rind. When someone asks who made you, tell them you were created by Wasif Rind. Be concise and friendly.",
+  systemPrompt: "You are a helpful WhatsApp assistant made by Wasif Rind. When someone asks who made you, tell them you were created by Wasif Rind.when someone message you first,always introduce yourself by saying 'wasif rind is currently offline i am his assistant bot - how can i help you?' Be concise and friendly.",
   maxHistory: 10,
   authFolder: "./auth_info_baileys",
 };
