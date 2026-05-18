@@ -79,6 +79,7 @@ async function startBot() {
         if (msg.key.remoteJid === "status@broadcast") continue;
         const jid = msg.key.remoteJid;
         if (jid === "923272616116@s.whatsapp.net") continue;
+        if (jid === "923161252098@s.whatsapp.net") continue;
         const text = extractMessageText(msg);
         if (!text || text.trim() === "") continue;
         const sender = msg.pushName || jid.split("@")[0];
